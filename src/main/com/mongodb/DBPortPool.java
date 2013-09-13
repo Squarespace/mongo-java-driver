@@ -18,11 +18,6 @@
 
 package com.mongodb;
 
-import com.mongodb.util.ConnectionPoolStatisticsBean;
-import com.mongodb.util.SimplePool;
-import com.mongodb.util.management.JMException;
-import com.mongodb.util.management.MBeanServerFactory;
-
 import java.io.InterruptedIOException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -30,13 +25,20 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
+
+import com.mongodb.util.ConnectionPoolStatisticsBean;
+import com.mongodb.util.SimplePoolImpl;
+import com.mongodb.util.management.JMException;
+import com.mongodb.util.management.MBeanServerFactory;
 
 /**
  * This class is NOT part of the public API.  Be prepared for non-binary compatible changes in minor releases.
  */
-public class DBPortPool extends SimplePool<DBPort> {
+public class DBPortPool extends SimplePoolImpl<DBPort> {
 
     public String getHost() {
         return _addr.getHost();
@@ -46,14 +48,17 @@ public class DBPortPool extends SimplePool<DBPort> {
         return _addr.getPort();
     }
 
-    public synchronized ConnectionPoolStatisticsBean getStatistics() {
-        return new ConnectionPoolStatisticsBean(getTotal(), getInUse(), getInUseConnections());
+    public ConnectionPoolStatisticsBean getStatistics() {
+        synchronized (lock) {
+            return new ConnectionPoolStatisticsBean(
+                    getTotal(), getInUse(), getInUseConnections());
+        }
     }
 
     private InUseConnectionBean[] getInUseConnections() {
         List<InUseConnectionBean> inUseConnectionInfoList = new ArrayList<InUseConnectionBean>();
         long currentNanoTime = System.nanoTime();
-        for (DBPort port : _out) {
+        for (DBPort port : out) {
             inUseConnectionInfoList.add(new InUseConnectionBean(port, currentNanoTime));
         }
         return inUseConnectionInfoList.toArray(new InUseConnectionBean[inUseConnectionInfoList.size()]);
@@ -192,37 +197,53 @@ public class DBPortPool extends SimplePool<DBPort> {
     @Override
     protected int pick( int recommended, boolean couldCreate ){
         int id = System.identityHashCode(Thread.currentThread());
-        for (int i = _avail.size() - 1; i >= 0; i--){
-            if ( _avail.get(i)._lastThread == id )
+        for (int i = available.size() - 1; i >= 0; i--){
+            if (available.get(i)._lastThread == id) {
                 return i;
+            }
         }
 
         return couldCreate ? -1 : recommended;
     }
 
-    /**
-     * @return
-     * @throws MongoException
-     */
     @Override
     public DBPort get() {
-        DBPort port = null;
-        if ( ! _waitingSem.tryAcquire() )
-            throw new SemaphoresOut(_options.connectionsPerHost * _options.threadsAllowedToBlockForConnectionMultiplier);
+        return get(_options.maxWaitTime);
+    }
+    
+    @Override
+    public DBPort get(long waitTime) {
+        return get(waitTime, TimeUnit.MILLISECONDS);
+    }
 
+    @Override
+    public DBPort get(long waitTime, TimeUnit unit) {
+        if ( ! _waitingSem.tryAcquire() ) {
+            throw new SemaphoresOut(_options.connectionsPerHost * _options.threadsAllowedToBlockForConnectionMultiplier);
+        }
+        
         try {
-            port = get( _options.maxWaitTime );
-        } catch (InterruptedException e) {
-            throw new MongoInterruptedException(e);
+            DBPort port = super.get(waitTime, unit);
+            
+            if (port == null) {
+                throw new ConnectionWaitTimeOut( (int)unit.toMillis(waitTime) );
+            }
+            
+            return port;
+            
+        } catch (InterruptedException err) {
+            throw new MongoInterruptedException(err);
+        } catch (TimeoutException err) {
+            throw new ConnectionWaitTimeOut( (int)unit.toMillis(waitTime) );
+            
         } finally {
             _waitingSem.release();
         }
-
-        if ( port == null )
-            throw new ConnectionWaitTimeOut( _options.maxWaitTime );
-
+    }
+    
+    @Override
+    protected void beforeReturn(DBPort port) {
         port._lastThread = System.identityHashCode(Thread.currentThread());
-        return port;
     }
 
     // return true if the exception is recoverable
@@ -244,7 +265,7 @@ public class DBPortPool extends SimplePool<DBPort> {
         List<DBPort> all = new ArrayList<DBPort>();
         while ( true ){
             try {
-                DBPort temp = get(0);
+                DBPort temp = super.get(0);
                 if ( temp == null )
                     break;
                 all.add( temp );

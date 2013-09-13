@@ -25,7 +25,7 @@ import java.util.concurrent.Future;
 
 public class SimplePoolTest extends com.mongodb.util.TestCase {
 
-    class MyPool extends SimplePool<Integer> {
+    class MyPool extends SimplePoolImpl<Integer> {
 
 	MyPool( int size ){
 	    super( "blah" , size  );
@@ -123,7 +123,7 @@ public class SimplePoolTest extends com.mongodb.util.TestCase {
 
     @org.testng.annotations.Test
     public void testCouldCreate() throws InterruptedException {
-        SimplePool<Integer> p = new SimplePool<Integer>("pool", 2) {
+        SimplePool<Integer> p = new SimplePoolImpl<Integer>("pool", 2) {
             @Override
             protected Integer createNew() {
                 return _num++;

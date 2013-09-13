@@ -18,7 +18,7 @@
 
 package com.mongodb.util;
 
-public class StringBuilderPool extends SimplePool<StringBuilder> {
+public class StringBuilderPool extends SimplePoolImpl<StringBuilder> {
 
     /** Initializes a pool of a given number of StringBuilders, each of a certain size.
      * @param maxToKeep the number of string builders in the pool
